@@ -1,16 +1,10 @@
 # ============================================================
 # Preview Environment CI Pipeline
 # ============================================================
-# This workflow:
-# 1. Builds and pushes Docker image on PR events
-# 2. Adds "preview" label to trigger ArgoCD deployment
-# 3. Waits for the preview environment to be ready
-# 4. Runs tests against the live preview
-# 5. Reports results back to the PR
-#
-# The "preview" label is the coordination mechanism between
-# CI and ArgoCD - ArgoCD only creates environments for PRs
-# that have this label, ensuring the image exists first.
+# 1. Builds and pushes Docker image
+# 2. Adds "preview" label to trigger ArgoCD
+# 3. Connects to Tailscale to reach homelab
+# 4. Runs tests against preview environment
 # ============================================================
 
 name: Preview Environment CI
@@ -21,121 +15,84 @@ on:
     branches: [main, master]
 
 env:
-  REGISTRY: docker.io
   IMAGE_NAME: shoofio/preview-demo
   PREVIEW_DOMAIN: shoofio.com
 
 jobs:
-  # ============================================================
-  # JOB 1: Build and Push Docker Image
-  # ============================================================
   build:
-    name: 🐳 Build & Push Image
+    name: 🐳 Build & Push
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
       sha_short: ${{ steps.meta.outputs.sha_short }}
       pr_number: ${{ steps.meta.outputs.pr_number }}
     
-    permissions:
-      contents: read
-      packages: write
-    
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      - name: 🏷️ Generate build metadata
+      - name: 🏷️ Generate metadata
         id: meta
         run: |
           SHA_SHORT=$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-7)
           PR_NUMBER=${{ github.event.pull_request.number }}
-          BRANCH_NAME=${{ github.head_ref }}
-          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          IMAGE_TAG="pr-${PR_NUMBER}-${SHA_SHORT}"
-          
           echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
           echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
-          echo "build_time=${BUILD_TIME}" >> $GITHUB_OUTPUT
-          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          
-          echo "### 🏷️ Build Metadata" >> $GITHUB_STEP_SUMMARY
-          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| PR Number | #${PR_NUMBER} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Branch | ${BRANCH_NAME} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit | ${SHA_SHORT} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image Tag | ${IMAGE_TAG} |" >> $GITHUB_STEP_SUMMARY
+          echo "image_tag=pr-${PR_NUMBER}-${SHA_SHORT}" >> $GITHUB_OUTPUT
       
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
       
-      - name: 🏗️ Build and push image
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
           build-args: |
             COMMIT_SHA=${{ github.event.pull_request.head.sha }}
             PR_NUMBER=${{ steps.meta.outputs.pr_number }}
-            BRANCH_NAME=${{ steps.meta.outputs.branch_name }}
-            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+            BRANCH_NAME=${{ github.head_ref }}
+            BUILD_TIME=${{ github.event.pull_request.updated_at }}
             IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ============================================================
-  # JOB 2: Trigger ArgoCD Deployment
-  # ============================================================
-  trigger-deploy:
-    name: 🚀 Trigger ArgoCD Deploy
+  deploy:
+    name: 🚀 Trigger Deploy
     runs-on: ubuntu-latest
     needs: build
-    
     permissions:
-      contents: read
       pull-requests: write
     
     steps:
-      - name: 🏷️ Add preview label to PR
+      - name: 🏷️ Add preview label
         uses: actions/github-script@v7
         with:
           script: |
-            // Add the "preview" label - this triggers ArgoCD to create the environment
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.build.outputs.pr_number }},
               labels: ['preview']
             });
-            
-            console.log('✅ Added "preview" label - ArgoCD will now create the environment');
       
-      - name: 💬 Comment build status on PR
+      - name: 💬 Comment on PR
         uses: actions/github-script@v7
         with:
           script: |
             const prNumber = ${{ needs.build.outputs.pr_number }};
             const imageTag = '${{ needs.build.outputs.image_tag }}';
-            const sha = '${{ needs.build.outputs.sha_short }}';
             const previewUrl = `https://preview-pr-${prNumber}.${{ env.PREVIEW_DOMAIN }}`;
             
-            // Find and delete previous bot comments
+            // Delete old comments
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber
             });
-            
             for (const comment of comments.data) {
               if (comment.body.includes('🚀 Preview Environment')) {
                 await github.rest.issues.deleteComment({
@@ -146,179 +103,84 @@ jobs:
               }
             }
             
-            // Post new comment
-            const body = `## 🚀 Preview Environment
-
-            | Status | Details |
-            |--------|---------|
-            | 🐳 Image | \`${{ env.IMAGE_NAME }}:${imageTag}\` |
-            | 📝 Commit | \`${sha}\` |
-            | ⏰ Built | ${new Date().toISOString()} |
-            | 🏷️ Label | \`preview\` added - ArgoCD deploying... |
-
-            ### 🔗 Preview URL
-            \`\`\`
-            ${previewUrl}
-            \`\`\`
-            
-            > ⏳ **Note:** It may take 1-2 minutes for ArgoCD to sync and deploy.
-            > 
-            > 🗑️ This environment will be **automatically deleted** when this PR is closed.
-            `;
-            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: body
+              body: `## 🚀 Preview Environment
+
+| | |
+|---|---|
+| 🐳 Image | \`${{ env.IMAGE_NAME }}:${imageTag}\` |
+| 🔗 URL | [${previewUrl}](${previewUrl}) |
+
+> ⏳ ArgoCD is deploying... (1-2 min)
+> 🗑️ Auto-deleted when PR closes`
             });
 
-  # ============================================================
-  # JOB 3: Wait for Environment & Run Tests
-  # ============================================================
   test:
-    name: 🧪 Test Preview Environment
+    name: 🧪 Test
     runs-on: ubuntu-latest
-    needs: [build, trigger-deploy]
-    
+    needs: [build, deploy]
     permissions:
-      contents: read
       pull-requests: write
     
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      # --------------------------------------------------------
-      # Wait for the preview environment to be ready
-      # This polls the health endpoint until it responds
-      # --------------------------------------------------------
-      - name: ⏳ Wait for preview environment
+      - name: 🔐 Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      
+      - name: ⏳ Wait for environment
         id: wait
         run: |
-          PREVIEW_URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}"
-          MAX_ATTEMPTS=60  # 60 attempts * 10 seconds = 10 minutes max wait
-          ATTEMPT=0
+          URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}"
+          echo "Waiting for: ${URL}"
           
-          echo "🔍 Waiting for preview environment at: ${PREVIEW_URL}"
-          echo ""
-          
-          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-            ATTEMPT=$((ATTEMPT + 1))
-            echo "Attempt ${ATTEMPT}/${MAX_ATTEMPTS}..."
-            
-            # Try to hit the health endpoint
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${PREVIEW_URL}/health" 2>/dev/null || echo "000")
-            
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo ""
-              echo "✅ Preview environment is ready!"
-              echo "ready=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            
-            echo "   Status: ${HTTP_CODE} (waiting for 200)"
+          for i in $(seq 1 60); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${URL}/health" 2>/dev/null || echo "000")
+            echo "Attempt ${i}/60: ${CODE}"
+            [ "$CODE" = "200" ] && echo "ready=true" >> $GITHUB_OUTPUT && exit 0
             sleep 10
           done
           
-          echo ""
-          echo "❌ Timeout waiting for preview environment"
           echo "ready=false" >> $GITHUB_OUTPUT
           exit 1
       
-      # --------------------------------------------------------
-      # Run tests against the live preview environment
-      # --------------------------------------------------------
-      - name: 🧪 Run E2E tests
+      - name: 🧪 Run tests
         if: steps.wait.outputs.ready == 'true'
         run: |
-          PREVIEW_URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}"
+          URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}"
           
-          echo "🧪 Running tests against: ${PREVIEW_URL}"
-          echo ""
+          echo "Testing: ${URL}"
           
-          # Test 1: Health endpoint returns 200
-          echo "Test 1: Health endpoint..."
-          HEALTH_RESPONSE=$(curl -s "${PREVIEW_URL}/health")
-          echo "Response: ${HEALTH_RESPONSE}"
+          # Health check
+          curl -sf "${URL}/health" | grep -q '"status":"healthy"' && echo "✅ Health OK" || exit 1
           
-          if echo "$HEALTH_RESPONSE" | grep -q '"status":"healthy"'; then
-            echo "✅ Health check passed"
-          else
-            echo "❌ Health check failed"
-            exit 1
-          fi
+          # Page loads
+          [ "$(curl -s -o /dev/null -w '%{http_code}' ${URL}/)" = "200" ] && echo "✅ Page OK" || exit 1
           
-          # Test 2: Main page loads
-          echo ""
-          echo "Test 2: Main page loads..."
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${PREVIEW_URL}/")
-          
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Main page loads (HTTP ${HTTP_CODE})"
-          else
-            echo "❌ Main page failed (HTTP ${HTTP_CODE})"
-            exit 1
-          fi
-          
-          # Test 3: Verify build info is correct
-          echo ""
-          echo "Test 3: Verify build metadata..."
-          HEALTH_JSON=$(curl -s "${PREVIEW_URL}/health")
-          
-          EXPECTED_PR="${{ needs.build.outputs.pr_number }}"
-          if echo "$HEALTH_JSON" | grep -q "\"pr_number\":\"${EXPECTED_PR}\""; then
-            echo "✅ PR number matches (#${EXPECTED_PR})"
-          else
-            echo "⚠️ PR number mismatch (expected #${EXPECTED_PR})"
-            echo "Response: ${HEALTH_JSON}"
-          fi
-          
-          echo ""
           echo "🎉 All tests passed!"
       
-      # --------------------------------------------------------
-      # Report test results back to PR
-      # --------------------------------------------------------
-      - name: 📊 Report test results
+      - name: 📊 Report results
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = ${{ needs.build.outputs.pr_number }};
-            const previewUrl = `https://preview-pr-${prNumber}.${{ env.PREVIEW_DOMAIN }}`;
             const ready = '${{ steps.wait.outputs.ready }}' === 'true';
-            const testsPassed = '${{ job.status }}' === 'success';
-            
-            let statusEmoji = testsPassed ? '✅' : '❌';
-            let statusText = testsPassed ? 'All tests passed!' : 'Tests failed';
-            
-            if (!ready) {
-              statusEmoji = '⏱️';
-              statusText = 'Environment failed to start within timeout';
-            }
-            
-            const body = `## 🧪 Test Results
-
-            | Check | Status |
-            |-------|--------|
-            | Environment Ready | ${ready ? '✅ Yes' : '❌ No'} |
-            | Tests | ${statusEmoji} ${statusText} |
-
-            ### 🔗 Preview URL
-            ${ready ? `[Open Preview](${previewUrl})` : 'Environment not available'}
-            `;
+            const passed = '${{ job.status }}' === 'success';
             
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
+              issue_number: ${{ needs.build.outputs.pr_number }},
+              body: `## 🧪 Test Results
+| Check | Status |
+|-------|--------|
+| Environment | ${ready ? '✅ Ready' : '❌ Timeout'} |
+| Tests | ${passed ? '✅ Passed' : '❌ Failed'} |`
             });
-
-  # ============================================================
-  # JOB 4: Cleanup on PR Close (optional - ArgoCD handles this)
-  # ============================================================
-  # Note: This job is informational. ArgoCD automatically cleans up
-  # when the PR closes because the ApplicationSet removes the
-  # Application, and the finalizer deletes all K8s resources.
