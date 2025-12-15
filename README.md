@@ -2,7 +2,7 @@
 
 A demo application showcasing ephemeral preview environments using ArgoCD ApplicationSets with the Pull Request Generator.
 
-## Architecture
+## Architecture 
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
