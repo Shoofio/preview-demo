@@ -103,22 +103,19 @@ jobs:
               }
             }
             
-            const body = [
-              '## 🚀 Preview Environment',
-              '',
-              `🐳 **Image:** \`${{ env.IMAGE_NAME }}:${imageTag}\``,
-              '',
-              `🔗 **URL:** [${previewUrl}](${previewUrl})`,
-              '',
-              '> ⏳ ArgoCD is deploying... (1-2 min)',
-              '> 🗑️ Auto-deleted when PR closes'
-            ].join('\n');
-            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: body
+              body: `## 🚀 Preview Environment
+
+| | |
+|---|---|
+| 🐳 Image | \`${{ env.IMAGE_NAME }}:${imageTag}\` |
+| 🔗 URL | [${previewUrl}](${previewUrl}) |
+
+> ⏳ ArgoCD is deploying... (1-2 min)
+> 🗑️ Auto-deleted when PR closes`
             });
 
   test:
@@ -177,17 +174,13 @@ jobs:
             const ready = '${{ steps.wait.outputs.ready }}' === 'true';
             const passed = '${{ job.status }}' === 'success';
             
-            const body = [
-              '## 🧪 Test Results',
-              '',
-              `✅ **Environment:** ${ready ? 'Ready' : '❌ Timeout'}`,
-              '',
-              `🧪 **Tests:** ${passed ? '✅ Passed' : '❌ Failed'}`
-            ].join('\n');
-            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.build.outputs.pr_number }},
-              body: body
+              body: `## 🧪 Test Results
+| Check | Status |
+|-------|--------|
+| Environment | ${ready ? '✅ Ready' : '❌ Timeout'} |
+| Tests | ${passed ? '✅ Passed' : '❌ Failed'} |`
             });
