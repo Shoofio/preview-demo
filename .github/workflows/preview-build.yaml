@@ -185,9 +185,6 @@ jobs:
       contents: read
       pull-requests: write
     
-    env:
-      PREVIEW_URL: https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}
-    
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
