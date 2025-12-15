@@ -17,6 +17,7 @@ on:
 env:
   IMAGE_NAME: shoofio/preview-demo
   PREVIEW_DOMAIN: shoofio.com
+  TAILSCALE_DOMAIN: jerboa-hops.ts.net
 
 jobs:
   build:
@@ -103,19 +104,22 @@ jobs:
               }
             }
             
+            const body = [
+              '## 🚀 Preview Environment',
+              '',
+              `🐳 **Image:** \`${{ env.IMAGE_NAME }}:${imageTag}\``,
+              '',
+              `🔗 **URL:** [${previewUrl}](${previewUrl})`,
+              '',
+              '> ⏳ ArgoCD is deploying... (1-2 min)',
+              '> 🗑️ Auto-deleted when PR closes'
+            ].join('\n');
+            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `## 🚀 Preview Environment
-
-| | |
-|---|---|
-| 🐳 Image | \`${{ env.IMAGE_NAME }}:${imageTag}\` |
-| 🔗 URL | [${previewUrl}](${previewUrl}) |
-
-> ⏳ ArgoCD is deploying... (1-2 min)
-> 🗑️ Auto-deleted when PR closes`
+              body: body
             });
 
   test:
@@ -138,7 +142,8 @@ jobs:
       - name: ⏳ Wait for environment
         id: wait
         run: |
-          URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}"
+          # Use Tailscale domain - accessible within the tailnet
+          URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.TAILSCALE_DOMAIN }}"
           echo "Waiting for: ${URL}"
           
           for i in $(seq 1 60); do
@@ -154,7 +159,7 @@ jobs:
       - name: 🧪 Run tests
         if: steps.wait.outputs.ready == 'true'
         run: |
-          URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.PREVIEW_DOMAIN }}"
+          URL="https://preview-pr-${{ needs.build.outputs.pr_number }}.${{ env.TAILSCALE_DOMAIN }}"
           
           echo "Testing: ${URL}"
           
@@ -174,13 +179,17 @@ jobs:
             const ready = '${{ steps.wait.outputs.ready }}' === 'true';
             const passed = '${{ job.status }}' === 'success';
             
+            const body = [
+              '## 🧪 Test Results',
+              '',
+              `✅ **Environment:** ${ready ? 'Ready' : '❌ Timeout'}`,
+              '',
+              `🧪 **Tests:** ${passed ? '✅ Passed' : '❌ Failed'}`
+            ].join('\n');
+            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.build.outputs.pr_number }},
-              body: `## 🧪 Test Results
-| Check | Status |
-|-------|--------|
-| Environment | ${ready ? '✅ Ready' : '❌ Timeout'} |
-| Tests | ${passed ? '✅ Passed' : '❌ Failed'} |`
+              body: body
             });
